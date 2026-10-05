@@ -94,7 +94,7 @@ struct FindingCard: View {
             }
             Button("Ignore") { model.ignore(finding) }
                 .help("Hide this suggestion until something new comes up")
-            if finding.bundlePath != nil, finding.targets.count > 1 {
+            if model.snapshot?.groups.contains(where: { $0.id == finding.id && $0.processes.count > 1 }) == true {
                 Button("Details") { model.selectedGroupID = finding.id }
             }
         }
@@ -106,6 +106,7 @@ struct FindingCard: View {
         case .pressure: return "exclamationmark.triangle.fill"
         case .leftover: return "moon.zzz.fill"
         case .growing: return "arrow.up.right"
+        case .growingSlowly: return "chart.line.uptrend.xyaxis"
         case .heavy: return "scalemass.fill"
         }
     }

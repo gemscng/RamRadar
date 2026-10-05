@@ -41,6 +41,32 @@ final class LeftoverTests: XCTestCase {
         XCTAssertFalse(leftover(proc(5, name: "node", path: "/System/Library/Foo/node")), "system paths")
         XCTAssertFalse(leftover(proc(6, name: "mongod", path: "/usr/local/bin/mongod", args: ["mongod"])), "not a dev tool we know")
     }
+
+    func testDetachedHeadlessBrowserIsLeftover() {
+        let exe = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        XCTAssertTrue(leftover(proc(1, path: exe, args: [exe, "--headless", "--screenshot=a.png"])))
+        XCTAssertTrue(leftover(proc(2, path: exe, args: [exe, "--headless=new"])))
+        XCTAssertTrue(leftover(proc(3, path: exe, args: [exe, "--enable-automation", "--remote-debugging-pipe"])))
+        XCTAssertFalse(leftover(proc(4, path: exe, args: [exe, "--restart"])), "the user's own Chrome")
+        XCTAssertFalse(leftover(proc(5, path: exe, args: [exe, "--type=renderer", "--headless"])), "a helper, not the browser")
+        XCTAssertFalse(leftover(proc(6, ppid: 4242, path: exe, args: [exe, "--headless"])), "its script is still running")
+    }
+
+    func testDevToolInDeletedFolderIsLeftoverEvenWithParent() {
+        let node = proc(1, ppid: 4242, name: "node", path: "/opt/homebrew/bin/node", args: ["node", "next", "dev"], hours: 0.2)
+        var gone = node; gone.cwdDeleted = true
+        XCTAssertFalse(leftover(node))
+        XCTAssertTrue(leftover(gone), "parent alive and only 12 minutes old, but its worktree is gone")
+        var shell = proc(2, ppid: 4242, name: "zsh", path: "/bin/zsh", args: ["-zsh"]); shell.cwdDeleted = true
+        XCTAssertFalse(leftover(shell), "a terminal tab sitting in a deleted folder is the user's")
+    }
+
+    func testLanguageServersAndEmulatorsCount() {
+        XCTAssertTrue(leftover(proc(1, name: "gopls", path: "/Users/me/go/bin/gopls", args: ["gopls", "serve"])))
+        XCTAssertTrue(leftover(proc(2, name: "sourcekit-lsp", path: "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/sourcekit-lsp")),
+                      "an Xcode toolchain binary is a command-line tool, even though its path runs through Xcode.app")
+        XCTAssertTrue(leftover(proc(3, name: "qemu-system-aarch64", path: "/Users/me/Library/Android/sdk/emulator/qemu/darwin-aarch64/qemu-system-aarch64")))
+    }
 }
 
 final class FindingTests: XCTestCase {
@@ -59,6 +85,134 @@ final class FindingTests: XCTestCase {
         XCTAssertEqual(f.bytes, 9 * gb + (300 << 20))
         XCTAssertEqual(f.kinds, [.leftover, .heavy])
         XCTAssertTrue(f.reasons[0].text.contains("2 child processes"))
+    }
+
+    func testHeadlessBrowserCardCoversItsHelpersAndLeavesUsersChromeAlone() {
+        let exe = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        let helper = "/Applications/Google Chrome.app/Contents/Frameworks/F.framework/Helpers/H.app/Contents/MacOS/H"
+        let ps = [
+            proc(1, path: exe, args: [exe], hours: 300, bytes: 2 * gb),
+            proc(2, ppid: 1, path: helper, args: [helper, "--type=renderer"], hours: 300, bytes: 2 * gb),
+            proc(10, path: exe, args: [exe, "--headless", "--screenshot=a.png", "http://localhost:7791/"], cwd: "/tmp/cards", hours: 110, bytes: 100 << 20),
+            proc(11, ppid: 10, path: helper, args: [helper, "--type=gpu-process"], hours: 110, bytes: 200 << 20),
+            proc(12, ppid: 10, path: helper, args: [helper, "--type=renderer"], hours: 110, bytes: 9 * gb),
+        ]
+        let s = snap(ps)
+        let findings = SuggestionEngine.findings(snapshot: s, baseline: nil, ownPID: ownPID)
+        XCTAssertEqual(findings.count, 1, "its heavy renderer joins the leftover card")
+        let f = findings[0]
+        XCTAssertEqual(f.title, "Google Chrome (headless)")
+        XCTAssertEqual(f.subtitle, "/tmp/cards")
+        XCTAssertEqual(f.bundlePath, "/Applications/Google Chrome.app")
+        XCTAssertEqual(Set(f.targets.map(\.pid)), [10, 11, 12])
+        XCTAssertEqual(f.kinds, [.leftover, .heavy])
+        XCTAssertTrue(f.reasons[0].text.hasPrefix("The script or agent that started it has ended · running 4 d · 2 child processes"))
+        XCTAssertTrue(s.groups.contains { $0.id == f.id }, "Details opens its program group")
+    }
+
+    func testDeletedFolderCardSitsOnTheTopmostProcess() {
+        var pnpm = proc(100, ppid: 4242, name: "node", path: "/opt/homebrew/bin/node", args: ["pnpm", "exec", "next", "dev"],
+                        cwd: "/Users/me/app-wt", hours: 3, bytes: 80 << 20)
+        var server = proc(101, ppid: 100, name: "next-server (v16)", path: "/opt/homebrew/bin/node", args: ["next-server (v16)"],
+                          cwd: "/Users/me/app-wt", hours: 3, bytes: 900 << 20)
+        pnpm.cwdDeleted = true
+        server.cwdDeleted = true
+        let findings = SuggestionEngine.findings(snapshot: snap([pnpm, server]), baseline: nil, ownPID: ownPID)
+        XCTAssertEqual(findings.count, 1, "the server inherits the deleted folder but belongs on its parent's card")
+        XCTAssertEqual(Set(findings.first?.targets.map(\.pid) ?? []), [100, 101])
+        XCTAssertEqual(findings.first?.reasons.first?.text, "The folder it runs in has been deleted · running 3 h · 1 child process")
+    }
+
+    func testSlowGrowthIsForCommandLinePrograms() {
+        func session(_ bytes: UInt64) -> ProcessSample {
+            proc(50, ppid: 4242, name: "claude", path: "/Users/me/.local/bin/claude", args: ["claude"], hours: 200, bytes: bytes)
+        }
+        let chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        func browser(_ bytes: UInt64) -> ProcessSample { proc(60, path: chrome, args: [chrome], hours: 200, bytes: bytes) }
+        func seen(hoursAgo: Double) -> FirstSeen {
+            var firstSeen = FirstSeen()
+            firstSeen.record(Snapshot(date: now.addingTimeInterval(-hoursAgo * 3600), system: system(),
+                                      processes: [session(300 << 20), browser(1 * gb)], currentUID: me))
+            return firstSeen
+        }
+        let later = snap([session(1 * gb), browser(5 * gb)])
+
+        let grew = SuggestionEngine.findings(snapshot: later, baseline: nil, firstSeen: seen(hoursAgo: 190), ownPID: ownPID)
+        XCTAssertEqual(grew.map(\.title), ["claude"], "Chrome grew too, but apps grow as they're used")
+        XCTAssertEqual(grew.first?.kinds, [.growingSlowly])
+        XCTAssertEqual(grew.first?.reasons.first?.text, "Grew from 300 MB to 1.0 GB in 7 d")
+        XCTAssertTrue(SuggestionEngine.findings(snapshot: later, baseline: nil, firstSeen: seen(hoursAgo: 2), ownPID: ownPID).isEmpty,
+                      "two hours is the short-term rule's job")
+
+        var restarted = seen(hoursAgo: 190)
+        var relaunched = session(1 * gb)
+        relaunched.startTime = now.addingTimeInterval(-60)
+        let afterRelaunch = snap([relaunched])
+        restarted.record(afterRelaunch)
+        XCTAssertTrue(SuggestionEngine.findings(snapshot: afterRelaunch, baseline: nil, firstSeen: restarted, ownPID: ownPID).isEmpty,
+                      "a new process with a reused pid starts from its own first size")
+    }
+
+    func testSwapCardWhenPressureIsNormal() {
+        func findings(swap: UInt64, pressure: PressureLevel = .normal) -> [Finding] {
+            var s = snap([])
+            s.system = SystemMemory(physical: 64 * gb, appMemory: 20 * gb, wired: 6 * gb, compressed: 20 * gb, cached: 9 * gb,
+                                    swapUsed: swap, swapTotal: swap + gb, pressure: pressure)
+            return SuggestionEngine.findings(snapshot: s, baseline: nil, ownPID: ownPID)
+        }
+        XCTAssertEqual(findings(swap: 24 * gb).map(\.title), ["24 GB of memory is in swap"])
+        XCTAssertTrue(findings(swap: 15 * gb).isEmpty, "under a quarter of the Mac's memory")
+        XCTAssertEqual(findings(swap: 24 * gb, pressure: .warning).map(\.title), ["Memory pressure is high"], "one system card, not two")
+    }
+
+    func testOneHugeTabGetsItsOwnCard() {
+        let chrome = "/Applications/Google Chrome.app"
+        let slack = "/Applications/Slack.app"
+        func helper(_ app: String) -> String { "\(app)/Contents/Frameworks/F.framework/Helpers/H.app/Contents/MacOS/H" }
+        let ps = [
+            proc(41, path: "\(chrome)/Contents/MacOS/Google Chrome", hours: 200, bytes: 1 * gb),
+            proc(42, ppid: 41, path: helper(chrome), args: [helper(chrome), "--type=renderer"], hours: 200, bytes: 2 * gb + (700 << 20)),
+            proc(43, ppid: 41, path: helper(chrome), args: [helper(chrome), "--type=renderer"], hours: 200, bytes: 1 * gb),
+            proc(44, ppid: 41, path: helper(chrome), args: [helper(chrome), "--type=renderer", "--extension-process"], bytes: 3 * gb),
+            proc(10, path: "\(slack)/Contents/MacOS/Slack", bytes: 200 << 20),
+            proc(11, ppid: 10, path: helper(slack), args: [helper(slack), "--type=renderer"], bytes: 3 * gb),
+        ]
+        var s = snap(ps)
+        s.system.physical = 64 * gb
+        let tabs = SuggestionEngine.findings(snapshot: s, baseline: nil, ownPID: ownPID).filter { $0.title.hasSuffix(" tab") }
+        XCTAssertEqual(tabs.map(\.targets.first?.pid), [42], "not the 1 GB tab, not an extension, not a Slack window")
+        XCTAssertEqual(tabs.first?.title, "Google Chrome tab")
+        XCTAssertEqual(tabs.first?.quitsApp, false, "Stop ends that one process instead of quitting Chrome")
+        XCTAssertEqual(tabs.first?.bundlePath, chrome)
+        XCTAssertEqual(tabs.first?.kinds, [.heavy])
+    }
+
+    func testSimulatorLeftWithSimulatorAppClosed() {
+        let bootstrap = "/Users/me/Library/Developer/CoreSimulator/Devices/ABC/data/var/run/launchd_bootstrap.plist"
+        let simPath = "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/Resources/bin/launchd_sim"
+        func sim(preview: Bool = false, hours: Double = 3) -> [ProcessSample] {
+            let args = ["launchd_sim", preview ? bootstrap.replacingOccurrences(of: "/CoreSimulator/Devices/", with: "/Xcode/UserData/Previews/Simulator Devices/") : bootstrap]
+            return [
+                proc(10, name: "launchd_sim", path: simPath, args: args, hours: hours, bytes: 10 << 20),
+                proc(11, ppid: 10, path: "/Library/Developer/CoreSimulator/Volumes/iOS/x.simruntime/Contents/Resources/RuntimeRoot/usr/libexec/logd", hours: hours, bytes: 900 << 20),
+            ]
+        }
+        let simulatorApp = proc(20, path: "/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app/Contents/MacOS/Simulator")
+        let xcode = proc(21, path: "/Applications/Xcode.app/Contents/MacOS/Xcode")
+        let xcodebuild = proc(22, ppid: 4242, name: "xcodebuild", path: "/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild")
+        func cards(_ ps: [ProcessSample]) -> [Finding] {
+            SuggestionEngine.findings(snapshot: snap(ps), baseline: nil, ownPID: ownPID).filter { $0.kinds.contains(.leftover) }
+        }
+
+        let left = cards(sim())
+        XCTAssertEqual(left.map(\.title), ["Simulator"])
+        XCTAssertEqual(left.first?.targets.map(\.pid), [10, 11], "launchd_sim is stopped first")
+        XCTAssertEqual(left.first?.reasons.first?.text, "Running with the Simulator app closed · booted 3 h ago")
+        XCTAssertTrue(cards(sim() + [simulatorApp]).isEmpty, "the Simulator app is open")
+        XCTAssertTrue(cards(sim() + [xcodebuild]).isEmpty, "tests are running")
+        XCTAssertTrue(cards(sim(hours: 0.5)).isEmpty, "booted under an hour ago")
+        XCTAssertTrue(cards(sim(preview: true) + [xcode]).isEmpty, "Xcode manages its preview simulators")
+        XCTAssertEqual(cards(sim(preview: true)).count, 1, "a preview simulator Xcode left behind")
     }
 
     func testHeavyThresholdIsTwentyPercentCappedAtEightGB() {
@@ -149,5 +303,33 @@ final class SamplerTests: XCTestCase {
         var reused = me!
         reused.startTime = reused.startTime.addingTimeInterval(-60)
         XCTAssertFalse(Sampler.isSameProcess(reused), "a reused pid must not match")
+    }
+
+    func testOpenFilesListsAnOpenFile() throws {
+        let name = "ramradar-open-\(UUID().uuidString)"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        try Data("x".utf8).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        XCTAssertTrue(Sampler.openFiles(getpid()).contains { $0.hasSuffix("/" + name) })
+    }
+
+    func testNoticesDeletedWorkingDirectory() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ramradar-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["60"]
+        process.currentDirectoryURL = dir
+        try process.run()
+        defer { process.terminate() }
+        func sample() -> ProcessSample? { Sampler.processes().first { $0.pid == process.processIdentifier } }
+
+        XCTAssertEqual(sample()?.cwdDeleted, false)
+        try FileManager.default.removeItem(at: dir)
+        let after = sample()
+        XCTAssertEqual(after?.cwdDeleted, true)
+        XCTAssertTrue(after?.cwd?.hasSuffix(dir.lastPathComponent) ?? false, "the kernel still reports the old path")
     }
 }

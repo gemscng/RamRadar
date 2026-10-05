@@ -13,6 +13,7 @@ public enum ProcessKind {
         func value(_ flag: String) -> String? {
             p.arguments.first { $0.hasPrefix(flag + "=") }.map { String($0.dropFirst(flag.count + 1)) }
         }
+        if p.isVirtualMachine { return "Virtual machine" }
         guard let type = value("--type") else { return p.executableName }
         switch type {
         case "renderer":

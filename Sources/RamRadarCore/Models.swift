@@ -13,14 +13,21 @@ public struct ProcessSample: Hashable, Sendable {
     public var arguments: [String]
     /// Working directory, when readable.
     public var cwd: String?
+    /// The working directory no longer exists: a removed git worktree or a cleaned-up temp folder.
+    public var cwdDeleted: Bool
     public var startTime: Date
     /// Physical footprint in bytes: the "Memory" column in Activity Monitor.
     /// Unlike RSS it includes compressed and swapped-out pages.
     public var footprint: UInt64
+    /// Files the process has open. Only read for virtual machines, to tell whose VM it is.
+    public var openFiles: [String]
+    /// For `launchd_sim`: the simulated device's name, e.g. "iPhone 16 Pro".
+    public var deviceName: String?
 
     public init(
         pid: Int32, ppid: Int32, uid: UInt32, name: String, path: String = "",
-        arguments: [String] = [], cwd: String? = nil, startTime: Date, footprint: UInt64
+        arguments: [String] = [], cwd: String? = nil, cwdDeleted: Bool = false, startTime: Date, footprint: UInt64,
+        openFiles: [String] = [], deviceName: String? = nil
     ) {
         self.pid = pid
         self.ppid = ppid
@@ -29,8 +36,11 @@ public struct ProcessSample: Hashable, Sendable {
         self.path = path
         self.arguments = arguments
         self.cwd = cwd
+        self.cwdDeleted = cwdDeleted
         self.startTime = startTime
         self.footprint = footprint
+        self.openFiles = openFiles
+        self.deviceName = deviceName
     }
 
     /// Stable across samples. A bare pid is not, because macOS reuses pids.
@@ -49,6 +59,24 @@ public struct ProcessSample: Hashable, Sendable {
     public var executableName: String {
         path.isEmpty ? name : (path as NSString).lastPathComponent
     }
+
+    public var isHeadless: Bool {
+        arguments.contains { $0 == "--headless" || $0.hasPrefix("--headless=") }
+    }
+
+    /// The main process of an app a script or agent started: `chrome --headless --screenshot`,
+    /// Puppeteer, Playwright, `soffice --headless`. Chromium helpers carry `--type=` and are
+    /// not main processes; people don't pass `--headless` or `--enable-automation` themselves.
+    public var isAutomatedInstance: Bool {
+        guard !arguments.contains(where: { $0.hasPrefix("--type=") }) else { return false }
+        return isHeadless || arguments.contains("--enable-automation")
+    }
+
+    /// The root of a booted iOS / watchOS / tvOS simulator; the simulated system runs under it.
+    public var isSimulatorRoot: Bool { executableName == "launchd_sim" }
+
+    /// Apple's Virtualization framework runs every VM (Docker Desktop, OrbStack, UTM, Lima…) in this process.
+    public var isVirtualMachine: Bool { executableName == VirtualMachines.executableName }
 }
 
 public enum PressureLevel: Int, Sendable, Comparable {

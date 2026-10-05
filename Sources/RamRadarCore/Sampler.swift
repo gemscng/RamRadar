@@ -31,19 +31,51 @@ public enum Sampler {
             let owned = info.pbi_uid == uid
             var name = tupleString(info.pbi_name)
             if name.isEmpty { name = tupleString(info.pbi_comm) }
-            result.append(ProcessSample(
+            let workingDirectory = owned ? cwd(pid) : nil
+            var sample = ProcessSample(
                 pid: pid,
                 ppid: Int32(info.pbi_ppid),
                 uid: info.pbi_uid,
                 name: name,
                 path: path(pid),
                 arguments: owned ? arguments(pid, buffer: &argBuffer) : [],
-                cwd: owned ? cwd(pid) : nil,
+                cwd: workingDirectory,
+                // The kernel keeps reporting a deleted directory's old path.
+                cwdDeleted: workingDirectory.map { !FileManager.default.fileExists(atPath: $0) } ?? false,
                 startTime: startDate(info),
                 footprint: footprint
-            ))
+            )
+            if owned && sample.isVirtualMachine { sample.openFiles = openFiles(pid) }
+            if owned && sample.isSimulatorRoot { sample.deviceName = simulatorDeviceName(sample) }
+            result.append(sample)
         }
         return result
+    }
+
+    /// Paths of the files and folders `pid` has open.
+    public static func openFiles(_ pid: Int32) -> [String] {
+        let fdSize = MemoryLayout<proc_fdinfo>.stride
+        let bytes = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+        guard bytes > 0 else { return [] }
+        var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: Int(bytes) / fdSize + 16)
+        let filled = fds.withUnsafeMutableBytes { proc_pidinfo(pid, PROC_PIDLISTFDS, 0, $0.baseAddress, Int32($0.count)) }
+        guard filled > 0 else { return [] }
+        var paths: [String] = []
+        for fd in fds.prefix(Int(filled) / fdSize) where fd.proc_fdtype == UInt32(PROX_FDTYPE_VNODE) {
+            var info = vnode_fdinfowithpath()
+            let size = Int32(MemoryLayout<vnode_fdinfowithpath>.stride)
+            guard proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDVNODEPATHINFO, &info, size) == size else { continue }
+            let path = tupleString(info.pvip.vip_path)
+            if !path.isEmpty { paths.append(path) }
+        }
+        return paths
+    }
+
+    /// The `name` in the simulator's `device.plist`, e.g. "iPhone 16 Pro".
+    static func simulatorDeviceName(_ root: ProcessSample) -> String? {
+        guard let dir = Simulators.deviceDirectory(root),
+              let plist = NSDictionary(contentsOfFile: dir + "/device.plist") else { return nil }
+        return plist["name"] as? String
     }
 
     /// True when `pid` still belongs to the process that was sampled. Guards the

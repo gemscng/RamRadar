@@ -7,11 +7,11 @@ let gb: UInt64 = 1 << 30
 
 func proc(
     _ pid: Int32, ppid: Int32 = 1, uid: UInt32 = me, name: String = "x", path: String = "",
-    args: [String] = [], cwd: String? = nil, hours: Double = 5, bytes: UInt64 = 100 << 20
+    args: [String] = [], cwd: String? = nil, hours: Double = 5, bytes: UInt64 = 100 << 20, openFiles: [String] = []
 ) -> ProcessSample {
     ProcessSample(
         pid: pid, ppid: ppid, uid: uid, name: name, path: path, arguments: args, cwd: cwd,
-        startTime: now.addingTimeInterval(-hours * 3600), footprint: bytes
+        startTime: now.addingTimeInterval(-hours * 3600), footprint: bytes, openFiles: openFiles
     )
 }
 

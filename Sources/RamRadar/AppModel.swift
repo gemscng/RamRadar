@@ -17,7 +17,8 @@ struct StopTarget {
     }
 
     init(finding: Finding) {
-        (id, name, processes, bundlePath) = (finding.id, finding.title, finding.targets, finding.bundlePath)
+        (id, name, processes) = (finding.id, finding.title, finding.targets)
+        bundlePath = finding.quitsApp ? finding.bundlePath : nil
     }
 
     /// A single process inside an app: stopped with SIGTERM, not by quitting the app.
@@ -72,6 +73,7 @@ final class AppModel: ObservableObject {
     private let isDemo: Bool
     private var history: [Baseline] = []
     private var baseline: Baseline?
+    private var firstSeen = FirstSeen()
     private var timer: Timer?
 
     init(defaults: UserDefaults = .standard, demo: Bool = false) {
@@ -138,6 +140,7 @@ final class AppModel: ObservableObject {
         // the panel (which also checks) doesn't hide slow growth.
         let minAge = min(600, interval * 0.66)
         baseline = history.last { snap.date.timeIntervalSince($0.date) >= minAge }
+        if !isDemo { firstSeen.record(snap) }
         snapshot = snap
         recomputeFindings()
         if !isDemo {
@@ -153,7 +156,7 @@ final class AppModel: ObservableObject {
 
     private func recomputeFindings() {
         guard let snapshot else { return }
-        findings = SuggestionEngine.findings(snapshot: snapshot, baseline: baseline, ignored: ignored)
+        findings = SuggestionEngine.findings(snapshot: snapshot, baseline: baseline, firstSeen: firstSeen, ignored: ignored)
     }
 
     // MARK: Ignoring suggestions

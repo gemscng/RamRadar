@@ -37,6 +37,13 @@ public enum BrowserTabs {
         "org.chromium.Chromium", "com.brave.Browser", "com.microsoft.edgemac", "com.vivaldi.Vivaldi",
     ]
 
+    /// Chromium browsers by app name, where a renderer process serves tabs. In Electron apps
+    /// (Slack, VS Code) a renderer is a whole window, so stopping one isn't a small step.
+    public static let appNames: Set<String> = [
+        "Google Chrome", "Google Chrome Beta", "Google Chrome Dev", "Google Chrome Canary", "Chromium",
+        "Brave Browser", "Microsoft Edge", "Vivaldi", "Arc", "Opera",
+    ]
+
     /// Pairs the per-window title and URL lists the browser returns. Empty windows are dropped.
     public static func windows(titles: [[String]], urls: [[String]]) -> [Window] {
         var result: [Window] = []
