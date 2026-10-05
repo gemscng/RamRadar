@@ -11,7 +11,7 @@ A small, open-source macOS menu-bar app that shows which programs are using your
 
 - **Lives in the menu bar.** A memory-chip icon; a **red dot** appears on it when RamRadar has a suggestion.
 - **Checks every 60 minutes** (5, 15, 30 or 60, your choice) and whenever you open it.
-- **Shows memory by program**, not by process: Chrome's 180 helper processes count as one "Google Chrome". A donut chart and a ranked list with bars show where the memory is going.
+- **Shows memory by program**, not by process: Chrome's 180 helper processes count as one "Google Chrome". A headless or automated Chrome started by a script or agent is listed separately, as "Google Chrome (headless)". A booted Xcode simulator (~200 processes) is one program named after its device, and a virtual machine counts toward the app running it (Docker Desktop, OrbStack, UTM, Rancher Desktop) or is named after the tool that made it (Colima, Lima, Podman, Tart). A donut chart and a ranked list with bars show where the memory is going.
 - **Drill into any program** with more than one process: click its row to see the breakdown by type (renderers, GPU, extensions, utility services…) and every process with its PID, age and size. Each one can be stopped on its own.
 - **For Chromium browsers** (Chrome, Brave, Edge, Vivaldi, Chromium), the breakdown can also list your open tabs. Chromium doesn't expose which process belongs to which tab, so the list isn't matched to the processes.
 - **Suggests what to stop**, with the reason spelled out.
@@ -31,12 +31,13 @@ RamRadar measures **physical footprint** (the "Memory" column in Activity Monito
 
 | Suggestion | When | What Stop does |
 |---|---|---|
-| **Left over** | A dev tool (`node`, `npm`/`pnpm`/`yarn`, `next-server`, `vite`, `python`, `ruby`, `java`, `bun`, `deno`, `idevicesyslog`, `log stream`, `tail -f`, …) whose parent session has ended (its parent is now `launchd`), owned by you, running for over an hour | Stops it **and its child processes** (e.g. `npm exec next dev` plus the `next-server` it started) |
-| **Heavy** | A program using at least 20% of physical memory (capped at 8 GB, so a 64 GB Mac still flags an 8 GB program) | Quits the app or stops the process |
+| **Left over** | A dev tool (`node`, `npm`/`pnpm`/`yarn`, `next-server`, `vite`, `python`, `ruby`, `java`, `bun`, `deno`, `idevicesyslog`, `log stream`, `tail -f`, language servers like `gopls` and `sourcekit-lsp`, the Android emulator, …) or a headless / automated browser (`chrome --headless`, Puppeteer, Playwright) whose parent session has ended (its parent is now `launchd`), owned by you, running for over an hour. Also a dev tool whose working folder has been deleted (a removed git worktree), however young and whether or not its parent is still running. Also a simulator booted for over an hour with the Simulator app closed (not while `xcodebuild` runs, and not Xcode's preview simulators while Xcode is open) | Stops it **and its child processes** (e.g. `npm exec next dev` plus the `next-server` it started, a headless Chrome and its helpers, or a simulator's `launchd_sim`, which shuts the device down) |
+| **Heavy** | A program using at least 20% of physical memory (capped at 8 GB, so a 64 GB Mac still flags an 8 GB program). Also one browser tab's process using at least 10% (capped at 2 GB) | Quits the app or stops the process. For a tab, stops only that process: its tabs crash and come back on reload |
 | **Growing** | A program that grew by at least 1 GB **and** 50% since an earlier check at least 10 minutes before | Same |
-| **Memory pressure** | macOS itself reports warning or critical pressure | Informational; lists the items above first |
+| **Growing slowly** | A command-line program (not an app, since apps grow as they're used) that grew by at least 512 MB **and** to 3× the size RamRadar first saw, at least 6 hours earlier. RamRadar has to be running to see the starting size | Same |
+| **Memory pressure** | macOS itself reports warning or critical pressure, or swap holds at least a quarter of physical memory while pressure is normal | Informational; lists the items above first |
 
-RamRadar never suggests or allows stopping processes owned by other users or system processes it shouldn't touch (WindowServer, Finder, Dock, loginwindow, …). **Ignore** hides one reason for one program; *Settings → Show Ignored Suggestions Again* brings them back.
+RamRadar never suggests or allows stopping processes owned by other users or system processes it shouldn't touch (WindowServer, Finder, Dock, loginwindow, …). It also doesn't stop a virtual machine's process directly, because a signal powers the VM off mid-write; quit the app that runs it, or use the tool's own command (`colima stop`, `limactl stop`). **Ignore** hides one reason for one program; *Settings → Show Ignored Suggestions Again* brings them back.
 
 Heuristics can be wrong. A service you deliberately run under `launchd` (a `brew services` Node app, say) will be flagged as left over. Click Ignore and it stays quiet.
 
@@ -76,14 +77,14 @@ RamRadar.app/Contents/MacOS/RamRadar --demo            # use built-in sample dat
 ## Privacy and permissions
 
 - No network access, no analytics, no accounts. Nothing leaves your Mac.
-- It reads process information through public APIs (`libproc`, Mach `host_statistics64`, `sysctl`), the same data `ps` and Activity Monitor use. That needs no permission.
+- It reads process information through public APIs (`libproc`, Mach `host_statistics64`, `sysctl`), the same data `ps` and Activity Monitor use. That needs no permission. For a virtual machine it also lists the files the process has open, to find whose disk image it is, and for a simulator it reads the device name from its `device.plist`.
 - **Show Open Tabs** (in a Chromium browser's breakdown) is the one exception: it asks the browser for its tab titles and addresses over AppleScript, so macOS asks once for Automation permission. Nothing is read until you click it.
 - Without admin rights macOS only reveals command lines and working directories for **your** processes; other users' processes appear by name only, and can't be stopped.
 
 ## Development
 
 ```bash
-make test           # 30 unit tests, including real spawn-and-kill tests
+make test           # 44 unit tests, including real spawn-and-kill tests
 make run            # build and open the app
 make screenshots    # regenerate docs/ images from demo data
 ```
