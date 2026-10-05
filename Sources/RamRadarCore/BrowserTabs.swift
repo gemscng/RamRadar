@@ -1,6 +1,6 @@
 import Foundation
 
-/// Open tabs of a Chromium browser, read through its AppleScript dictionary.
+/// Open tabs of a Chromium browser, read through its AppleScript dictionary (Apple Events).
 ///
 /// Chromium doesn't say which renderer process serves which tab, so this is a plain list
 /// of what's open, not a per-tab memory breakdown.
@@ -37,16 +37,7 @@ public enum BrowserTabs {
         "org.chromium.Chromium", "com.brave.Browser", "com.microsoft.edgemac", "com.vivaldi.Vivaldi",
     ]
 
-    /// Two Apple Events in total, however many tabs are open.
-    public static func script(bundleID: String) -> String {
-        """
-        tell application id "\(bundleID)"
-            return {title of every tab of every window, URL of every tab of every window}
-        end tell
-        """
-    }
-
-    /// Pairs the per-window title and URL lists the script returns. Empty windows are dropped.
+    /// Pairs the per-window title and URL lists the browser returns. Empty windows are dropped.
     public static func windows(titles: [[String]], urls: [[String]]) -> [Window] {
         var result: [Window] = []
         for (i, windowTitles) in titles.enumerated() {

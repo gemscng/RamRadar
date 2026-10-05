@@ -202,7 +202,7 @@ final class AppModel: ObservableObject {
     // MARK: Browser tabs
 
     func loadTabs(for group: ProgramGroup) {
-        guard let bundlePath = group.bundlePath else { return }
+        guard group.bundlePath != nil else { return }
         if isDemo {
             tabLists[group.id] = .loaded(DemoData.tabs())
             return
@@ -210,7 +210,7 @@ final class AppModel: ObservableObject {
         tabLists[group.id] = .loading
         // Let the spinner draw before the Apple Event (and maybe a permission prompt) blocks.
         DispatchQueue.main.async { [weak self] in
-            self?.tabLists[group.id] = TabReader.read(bundlePath: bundlePath)
+            self?.tabLists[group.id] = TabReader.read(group)
         }
     }
 

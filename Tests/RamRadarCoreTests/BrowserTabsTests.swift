@@ -26,8 +26,7 @@ final class BrowserTabsTests: XCTestCase {
         XCTAssertEqual(BrowserTabs.Tab(title: "", url: "about:blank").host, "about:blank")
     }
 
-    func testScriptTargetsBundleID() {
-        XCTAssertTrue(BrowserTabs.script(bundleID: "com.google.Chrome").contains(#"application id "com.google.Chrome""#))
+    func testSupportsChrome() {
         XCTAssertTrue(BrowserTabs.supportedBundleIDs.contains("com.google.Chrome"))
     }
 }
